@@ -14,7 +14,7 @@ import (
 // notch is the quick player around the camera housing at the top of the
 // screen: black like the housing, it grows out of it as music plays (the
 // cover on the left, the music's levels on the right) and opens into the
-// player under the pointer. On a display without a notch it hangs from the
+// player when clicked. On a display without a notch it hangs from the
 // top of the screen all the same.
 type notch struct {
 	a   *app
@@ -26,9 +26,10 @@ type notch struct {
 	screenX    float32 // the window's left on the screen
 	screenY    float32
 
-	open       bool // the pointer is over it: it shows the player
+	open       bool // clicked open: stays until the pointer leaves
+	pop        bool // the pointer is over the closed housing
+	held       bool // a press began inside: keep input until its release
 	hello      bool // it shows itself, turned off, with a way to keep it
-	enteredAt  time.Time
 	lastInside time.Time
 	passing    bool   // clicks pass through to what is under the window
 	watched    bool   // the pointer's moves poll
@@ -100,7 +101,7 @@ func (n *notch) watch() {
 	on := n.a.settings.Notch || n.hello
 	switch {
 	case on && n.unwatch == nil:
-		n.unwatch, n.watched = watchPointer(n.poll)
+		n.unwatch, n.watched = watchPointer(n.poll, n.pointerButton)
 	case !on && n.unwatch != nil:
 		n.unwatch()
 		n.unwatch, n.watched = nil, false
@@ -147,7 +148,7 @@ func (n *notch) setEnabled(on bool) {
 		n.poll()
 		return
 	}
-	n.open, n.hello = false, false
+	n.open, n.pop, n.hello, n.held = false, false, false, false
 	n.win.Hide()
 	n.watch()
 }
@@ -196,7 +197,7 @@ func (n *notch) bye() {
 	if n.a.settings.Notch {
 		return
 	}
-	n.open = false
+	n.open, n.pop, n.held = false, false, false
 	n.passing = true
 	n.win.SetIgnoreMouseEvents(true)
 	time.AfterFunc(time.Second, func() {
@@ -217,8 +218,19 @@ func (n *notch) keep() {
 	n.setEnabled(true)
 }
 
-// target returns the size the shape goes to.
+// target returns the size the shape goes to, with a small hint on hover.
 func (n *notch) target() (w, h float32) {
+	w, h = n.restTarget()
+	if n.pop && !n.open && !n.hello {
+		if w == 0 {
+			w, h = n.w0, n.h0
+		}
+		h += 4
+	}
+	return
+}
+
+func (n *notch) restTarget() (w, h float32) {
 	tr := n.a.pl.Current()
 	s := n.a.settings
 	switch {
@@ -244,41 +256,68 @@ func (n *notch) target() (w, h float32) {
 // cursorPoint is where the pointer is on the screen.
 var cursorPoint = func() mygo.Point { return mygo.Screen.CursorScreenPoint() }
 
-// poll follows the pointer, which the window cannot always see: it lets
-// clicks through where it draws nothing, and opens while over it.
-func (n *notch) poll() {
-	if !n.a.settings.Notch && !n.hello {
-		return
-	}
-	pt := cursorPoint()
+// containsPointer includes a little slack to cross the curved edge. On a
+// screen without a persistent housing, only the top center wakes it.
+func (n *notch) containsPointer(pt mygo.Point) bool {
 	w, h := n.target()
 	x := n.screenX + (n.winW-w)/2
 	px, py := float32(pt.X), float32(pt.Y)
-	slack := float32(6)
-	inside := px >= x-slack && px <= x+w+slack && py >= n.screenY-slack && py <= n.screenY+h+slack
-	if !n.real && !n.a.settings.NotchVirtual && !n.open && !n.hello {
-		// Without a notch, the pointer pressed against the top edge of
-		// the screen, about its middle, opens it.
+	const slack = float32(6)
+	if !n.real && !n.a.settings.NotchVirtual && !n.open && !n.pop && !n.hello {
 		cx := n.screenX + n.winW/2
-		inside = px >= cx-n.w0/2 && px <= cx+n.w0/2 && py <= n.screenY+1
+		return px >= cx-n.w0/2 && px <= cx+n.w0/2 && py >= n.screenY && py <= n.screenY+1
 	}
-	now := time.Now()
-	changed := false
-	if inside {
-		if n.lastInside.IsZero() || now.Sub(n.lastInside) > 100*time.Millisecond {
-			n.enteredAt = now
+	return px >= x-slack && px <= x+w+slack && py >= n.screenY-slack && py <= n.screenY+h+slack
+}
+
+func (n *notch) expand() {
+	if !n.a.settings.Notch || n.hello || n.open {
+		return
+	}
+	n.open, n.pop = true, false
+	n.lastInside = time.Now()
+	if n.win != nil {
+		n.win.Invalidate()
+	}
+}
+
+// pointerButton sees clicks even over the physical housing. A press that
+// starts inside retains the window's input until released outside it.
+func (n *notch) pointerButton(down bool) {
+	if !n.a.settings.Notch && !n.hello {
+		return
+	}
+	if down {
+		if n.containsPointer(cursorPoint()) {
+			n.held = true
+			n.expand()
 		}
+	} else {
+		n.held = false
+	}
+	n.poll()
+}
+
+// poll follows the pointer: hovering only peeks, clicking opens, and leaving
+// closes after a short grace period unless a control still owns the press.
+func (n *notch) poll() {
+	n.pollAt(cursorPoint(), time.Now())
+}
+
+func (n *notch) pollAt(pt mygo.Point, now time.Time) {
+	if !n.a.settings.Notch && !n.hello {
+		return
+	}
+	inside := n.containsPointer(pt)
+	beforeOpen, beforePop := n.open, n.pop
+	busy := n.held || n.scrub.held || n.scrub.active
+	if inside || busy {
 		n.lastInside = now
-		// A pointer passing by to the menu bar does not open it: one that
-		// rests there does. While it greets it stays as it is, the pointer
-		// on its button.
-		if !n.open && !n.hello && now.Sub(n.enteredAt) >= 300*time.Millisecond {
-			n.open, changed = true, true
-		}
 	} else if n.open && now.Sub(n.lastInside) > 300*time.Millisecond {
-		n.open, changed = false, true
+		n.open = false
 	}
-	pass := !inside
+	n.pop = inside && !n.open && !n.hello
+	pass := !inside && !busy
 	if n.win == nil {
 		n.passing = pass
 		return // as in tests
@@ -287,20 +326,19 @@ func (n *notch) poll() {
 		n.passing = pass
 		n.win.SetIgnoreMouseEvents(pass)
 	}
-	if changed {
+	if beforeOpen != n.open || beforePop != n.pop {
 		n.win.Invalidate()
 	}
-	n.pollAgain(inside)
+	n.pollAgain()
 }
 
-// pollAgain polls again soon while the pointer is over the notch or it is
-// open, for the times it rests and leaves; and, more slowly, while the app
-// is active, when the pointer's moves outside its windows go unseen, or
-// when they are never seen. Otherwise the next move polls.
-func (n *notch) pollAgain(inside bool) {
+// pollAgain polls while open to finish the leave delay, and more slowly
+// while the app is active or moves cannot be monitored. Hovering alone
+// needs no timer: the next move updates the preview.
+func (n *notch) pollAgain() {
 	var d time.Duration
 	switch {
-	case inside || n.open:
+	case n.open || n.held:
 		d = 33 * time.Millisecond
 	case n.active || !n.watched:
 		d = 100 * time.Millisecond
@@ -385,6 +423,10 @@ func (n *notch) view(c *ui.Context) {
 				n.expanded(c, tr, open, (w-notchOpenW)/2)
 			}
 		})
+		if !n.open && !n.hello {
+			ui.ButtonBase(c.Key("notch-open")).Absolute().Top(0).Left(cx-w/2).Size(w, h).
+				FocusRing(false).Label(T("Open Notch Player")).OnClick(n.expand)
+		}
 	})
 	a.syncWindows()
 }
@@ -482,9 +524,9 @@ func (n *notch) helloRow(c *ui.Context, shown, left float32) {
 		Opacity(max(0, shown*1.4-0.4))
 	row.Translate(0, (1-shown)*-8)
 	row.Children(func() {
-		title, hint := T("Control playback from the notch"), T("Rest the pointer here to pause or skip")
+		title, hint := T("Control playback from the notch"), T("Click here to pause or skip")
 		if !n.real {
-			title, hint = T("Control playback from the top of the screen"), T("Move the pointer to the top center to pause or skip")
+			title, hint = T("Control playback from the top of the screen"), T("Click the top center to pause or skip")
 		}
 		ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
 			ui.Text(c, title).FontSize(13.5).FontWeight(700).SingleLine()

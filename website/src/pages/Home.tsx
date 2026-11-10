@@ -123,8 +123,8 @@ const features: Feature[] = [
     icon: 'notch',
     title: ['Up in the notch', '刘海播放器'],
     body: [
-      'A mini player lives in the Mac’s notch and opens as the pointer comes by. There’s a tray menu, and the media keys work.',
-      '在 Mac 屏幕顶部的刘海处显示迷你播放器，指针移过去就展开。还有托盘菜单，媒体键也能用。',
+      'A mini player lives in the Mac’s notch. Hover for a peek, click to open, and move away to close. There’s a tray menu, and the media keys work.',
+      '在 Mac 屏幕顶部的刘海处显示迷你播放器，悬停时轻轻探出，点击展开，移开收起。还有托盘菜单，媒体键也能用。',
     ],
   },
   {

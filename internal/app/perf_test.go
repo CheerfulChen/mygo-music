@@ -117,3 +117,22 @@ func TestBackdropFadeEnds(t *testing.T) {
 		t.Error("the last song's backdrop still fades after the fade")
 	}
 }
+
+// The closed notch and its hover hint stop asking for animation frames once settled.
+func TestNotchHoverFrameBudget(t *testing.T) {
+	a := newTestApp()
+	a.settings.Notch = true
+	n := &notch{a: a, real: true, w0: 185, h0: 32, winW: notchOpenW + 60, winH: 240}
+	tt := ui.NewTester(n.view, int(n.winW), int(n.winH))
+	tt.Frame()
+	for _, pop := range []bool{false, true, false} {
+		n.pop = pop
+		tt.Frame()
+		tt.Advance(2 * time.Second)
+		tt.Frame()
+		tt.Advance(time.Second)
+		if tt.FramePending() {
+			t.Errorf("notch asks for frames at rest, hover %v", pop)
+		}
+	}
+}

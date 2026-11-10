@@ -74,8 +74,7 @@ func TestNotchGreetingKeptUnderPointer(t *testing.T) {
 		return mygo.Point{X: int(n.screenX + n.winW/2 + 120), Y: int(n.screenY + n.h0 + 28)}
 	}
 	n.poll()
-	n.enteredAt = n.lastInside.Add(-time.Second) // as if it had rested there
-	n.poll()
+	n.pollAt(cursorPoint(), n.lastInside.Add(time.Second))
 	if n.open {
 		t.Fatal("opened the player over the greeting")
 	}
@@ -119,5 +118,167 @@ func macOnly(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "darwin" {
 		t.Skip("the notch greets only on macOS")
+	}
+}
+
+// Hovering only peeks; clicking opens the player, and leaving closes it.
+func TestNotchClickToOpen(t *testing.T) {
+	a := newTestApp()
+	a.settings.Notch = true
+	n := &notch{a: a, real: true, w0: 185, h0: 32, winW: notchOpenW + 60, winH: 240}
+	a.notch = n
+	inside := mygo.Point{X: int(n.winW / 2), Y: 20}
+	outside := mygo.Point{X: 900, Y: 400}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	n.pollAt(inside, now)
+	n.pollAt(inside, now.Add(time.Second))
+	if n.open || !n.pop {
+		t.Fatal("hover did not stay a preview")
+	}
+	if _, h := n.target(); h != n.h0+4 {
+		t.Fatalf("hover grew to %v, want %v", h, n.h0+4)
+	}
+	tt := ui.NewTester(n.view, int(n.winW), int(n.winH))
+	tt.Frame()
+	tt.Advance(time.Second)
+	tt.Frame()
+	if dir := os.Getenv("MM_FRAMES"); dir != "" {
+		saveFrame(t, dir, "notch-hover-preview.png", tt.Image())
+	}
+	if err := tt.Click("Open Notch Player"); err != nil {
+		t.Fatal(err)
+	}
+	if !n.open || n.pop {
+		t.Fatal("click did not open the player")
+	}
+	n.pollAt(inside, now.Add(2*time.Second))
+	n.pollAt(outside, now.Add(2100*time.Millisecond))
+	if !n.open {
+		t.Fatal("closed without a grace period")
+	}
+	n.pollAt(outside, now.Add(3*time.Second))
+	if n.open || n.pop || !n.passing {
+		t.Fatal("leaving did not close and pass input through")
+	}
+	tt.Advance(time.Second)
+	tt.Frame()
+	if err := tt.Click("Open Notch Player"); err != nil {
+		t.Fatal(err)
+	}
+	if !n.open {
+		t.Fatal("could not reopen after closing")
+	}
+}
+
+// A click over the camera housing opens through the native event monitor.
+func TestNotchHousingClick(t *testing.T) {
+	a := newTestApp()
+	a.settings.Notch = true
+	n := &notch{a: a, real: true, w0: 185, h0: 32, winW: notchOpenW + 60, winH: 240}
+	defer func(f func() mygo.Point) { cursorPoint = f }(cursorPoint)
+	pt := mygo.Point{X: int(n.winW / 2), Y: 10}
+	cursorPoint = func() mygo.Point { return pt }
+	n.pointerButton(true)
+	if !n.open || !n.held || n.passing {
+		t.Fatal("housing click did not open and retain input")
+	}
+	pt = mygo.Point{X: 900, Y: 400}
+	n.pollAt(pt, n.lastInside.Add(time.Second))
+	if !n.open || n.passing {
+		t.Fatal("a held press lost the player outside the window")
+	}
+	n.pointerButton(false)
+	n.pollAt(pt, n.lastInside.Add(time.Second))
+	if n.open || n.held || !n.passing {
+		t.Fatal("releasing outside did not let the player close")
+	}
+}
+
+// Playback and liking keep the player open; a seek dragged outside finishes before it closes.
+func TestNotchControlsKeepOpen(t *testing.T) {
+	a := newTestApp()
+	a.settings.Notch = true
+	a.account = &music.Account{ID: "1"}
+	liked := make(chan bool, 1)
+	fake(a).like = func(_ string, on bool) error { liked <- on; return nil }
+	a.pl.Cue([]music.Track{song("7", "宝船")})
+	a.pl.SetLyrics(nil)
+	out := audio.NewPlayer(&silence{})
+	out.SetVolume(0)
+	a.pl.Attach(out)
+	defer out.Close()
+	n := &notch{a: a, real: true, open: true, w0: 185, h0: 32, winW: notchOpenW + 60, winH: 240}
+	a.notch = n
+	tt := ui.NewTester(n.view, int(n.winW), int(n.winH))
+	tt.Frame()
+	tt.Advance(time.Second)
+	tt.Frame()
+	if dir := os.Getenv("MM_FRAMES"); dir != "" {
+		saveFrame(t, dir, "notch-click-expanded.png", tt.Image())
+	}
+	if err := tt.Click("Play/Pause"); err != nil {
+		t.Fatal(err)
+	}
+	if a.pl.Playing() || !n.open {
+		t.Fatal("pausing did not keep the player open")
+	}
+	if err := tt.Click("Play/Pause"); err != nil {
+		t.Fatal(err)
+	}
+	if !a.pl.Playing() || !n.open {
+		t.Fatal("playing did not keep the player open")
+	}
+	if err := tt.Click("Like"); err != nil {
+		t.Fatal(err)
+	}
+	if !a.liked["7"] || !n.open || !wait(t, liked, "the like") {
+		t.Fatal("liking did not keep the player open")
+	}
+	bar, ok := tt.Find("Progress")
+	if !ok {
+		t.Fatal("no progress bar")
+	}
+	x, y := bar.X+bar.W*0.6, bar.Y+bar.H/2
+	tt.Press(x, y)
+	tt.Frame()
+	// The old hover-only close logic could remove the slider mid-drag.
+	tt.Move(x, 300)
+	tt.Frame()
+	outside := mygo.Point{X: int(x), Y: 300}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	n.pollAt(outside, now)
+	n.pollAt(outside, now.Add(time.Second))
+	if !n.open || n.passing || !n.scrub.held {
+		t.Fatal("dragging outside lost the player or its input")
+	}
+	tt.Release(x, 300)
+	tt.Frame()
+	tt.Frame()
+	if pos := a.pl.Position(); pos < 110*time.Second || pos > 130*time.Second {
+		t.Fatalf("seek did not finish at 60%%: %v", pos)
+	}
+	n.pollAt(outside, now.Add(2*time.Second))
+	if n.open || !n.passing {
+		t.Fatal("player did not close after the drag finished outside")
+	}
+}
+
+// Without a persistent virtual notch, only this screen's top edge reveals the click target.
+func TestNotchVirtualPeek(t *testing.T) {
+	a := newTestApp()
+	a.settings.Notch = true
+	n := &notch{a: a, w0: 200, h0: 28, winW: notchOpenW + 60, winH: 240, screenY: 300}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	n.pollAt(mygo.Point{X: int(n.winW / 2), Y: 200}, now)
+	if n.pop || !n.passing {
+		t.Fatal("a screen above the window triggered the virtual notch")
+	}
+	n.pollAt(mygo.Point{X: int(n.winW / 2), Y: 300}, now)
+	if !n.pop || n.open || n.passing {
+		t.Fatal("top edge did not reveal the click target")
+	}
+	n.pollAt(mygo.Point{X: 900, Y: 400}, now)
+	if w, h := n.target(); w != 0 || h != 0 {
+		t.Fatal("virtual notch stayed visible after leaving")
 	}
 }

@@ -104,13 +104,23 @@ func menuBarScreen() objc.ID {
 }
 
 // watchPointer calls fn on the main thread as the pointer moves, over this
-// app's windows or another's, until stop is called.
-func watchPointer(fn func()) (stop func(), ok bool) {
-	// mouse moved, and left, right and other mouse dragged
-	const mask = uint64(1<<5 | 1<<6 | 1<<7 | 1<<27)
+// app's windows or another's, and button on left press/release, until stopped.
+func watchPointer(fn func(), button func(bool)) (stop func(), ok bool) {
+	// Left press/release, mouse moved, and left, right and other mouse dragged.
+	const mask = uint64(1<<1 | 1<<2 | 1<<5 | 1<<6 | 1<<7 | 1<<27)
 	events := objc.ID(objc.GetClass("NSEvent"))
-	global := objc.NewBlock(func(_ objc.Block, _ objc.ID) { fn() })
-	local := objc.NewBlock(func(_ objc.Block, ev objc.ID) objc.ID { fn(); return ev })
+	handle := func(ev objc.ID) {
+		switch objc.Send[uint](ev, objc.RegisterName("type")) {
+		case 1:
+			button(true)
+		case 2:
+			button(false)
+		default:
+			fn()
+		}
+	}
+	global := objc.NewBlock(func(_ objc.Block, ev objc.ID) { handle(ev) })
+	local := objc.NewBlock(func(_ objc.Block, ev objc.ID) objc.ID { handle(ev); return ev })
 	g := events.Send(objc.RegisterName("addGlobalMonitorForEventsMatchingMask:handler:"), mask, global)
 	l := events.Send(objc.RegisterName("addLocalMonitorForEventsMatchingMask:handler:"), mask, local)
 	g.Send(objc.RegisterName("retain"))

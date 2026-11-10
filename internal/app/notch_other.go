@@ -10,4 +10,4 @@ func pinToTop(handle uintptr, w, h float64) {}
 
 func menuBarHeight() float64 { return 0 }
 
-func watchPointer(fn func()) (stop func(), ok bool) { return func() {}, false }
+func watchPointer(fn func(), button func(bool)) (stop func(), ok bool) { return func() {}, false }

@@ -380,7 +380,7 @@ func (a *app) settingsSections(c *ui.Context, p palette) []settingsSection {
 	// Only on macOS, the one with a notch player.
 	if a.notch != nil {
 		add("notch", T("Notch Player"), iconLaptop, func(row settingsRow, block settingsBlock) {
-			row(T("Show the Notch Player"), T("A small player at the notch on top of the screen, which opens as the pointer rests on it"), func() {
+			row(T("Show the Notch Player"), T("A small player at the notch on top of the screen. Click to open; move the pointer away to close"), func() {
 				if ui.Switch(c.Key("notch"), &s.Notch).Label(T("Show the Notch Player")).Changed() {
 					a.changed()
 				}
